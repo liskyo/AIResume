@@ -1,0 +1,5 @@
+{
+  "name": "AI Confidence Resume Master",
+  "description": "An intelligent resume builder that transforms rough inputs, project images, and technical docs into a professional 104-style resume using Google Gemini AI.",
+  "requestFramePermissions": []
+}
