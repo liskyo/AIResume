@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Steps } from './components/Steps';
 import { ResumePreview } from './components/ResumePreview';
@@ -18,15 +18,116 @@ const INITIAL_DATA: UserInputData = {
 };
 
 const STEPS = ['基本資料', '經歷與學歷', '專案作品', 'AI 生成結果'];
+const STORAGE_KEY = 'ai_resume_builder_data';
 
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(0);
-  const [formData, setFormData] = useState<UserInputData>(INITIAL_DATA);
+  
+  // Initialize state from localStorage if available
+  const [formData, setFormData] = useState<UserInputData>(() => {
+    try {
+      const savedData = localStorage.getItem(STORAGE_KEY);
+      if (savedData) {
+        const parsed = JSON.parse(savedData);
+        return {
+          ...INITIAL_DATA,
+          ...parsed,
+          uploadedResumeFile: null,
+          projects: Array.isArray(parsed.projects) 
+            ? parsed.projects.map((p: any) => ({ ...p, attachments: [] })) // Reset attachments on reload
+            : []
+        };
+      }
+    } catch (error) {
+      console.error("Failed to load saved data:", error);
+    }
+    return INITIAL_DATA;
+  });
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedResume, setGeneratedResume] = useState<GeneratedResume | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Save to localStorage whenever formData changes
+  useEffect(() => {
+    try {
+      const dataToSave = {
+        ...formData,
+        uploadedResumeFile: null,
+        projects: formData.projects.map(p => ({
+          ...p,
+          attachments: [] 
+        }))
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
+    } catch (error) {
+      console.error("Failed to save data:", error);
+    }
+  }, [formData]);
+
   // Handlers
+  const handleClearData = () => {
+    // Sandbox friendly: Direct action without confirm dialog
+    localStorage.removeItem(STORAGE_KEY);
+    setFormData(INITIAL_DATA);
+    setGeneratedResume(null);
+    setCurrentStep(0);
+  };
+
+  const handleLoadDemoData = () => {
+     // Sandbox friendly: Direct action without confirm dialog
+     // Defined inline to ensure deep new references and avoid stale state
+     const demoData: UserInputData = {
+        name: '張捷敏',
+        email: 'jamie.chang@example.com',
+        phone: '0912-345-678',
+        targetPosition: '資深前端工程師',
+        summaryRaw: '我有5年網頁開發經驗，熟悉 React 和 TypeScript。曾在電商公司負責核心購物車系統，提升轉化率 20%。個性積極，喜歡研究新技術。',
+        educationRaw: '國立台灣科技大學 資訊工程系 學士 (2014-2018)',
+        experiences: [
+          {
+            id: `demo-exp-${Date.now()}-1`,
+            company: '未來科技有限公司',
+            title: '前端工程師',
+            period: '2020/06 - 至今',
+            content: '負責公司官網改版，使用 Next.js。建立內部 UI Library，減少開發時間 30%。與後端工程師協作 API 串接。'
+          },
+          {
+            id: `demo-exp-${Date.now()}-2`,
+            company: '創意數位行銷',
+            title: '網頁設計師',
+            period: '2018/07 - 2020/05',
+            content: '切版各式活動網頁，確保 RWD 效果。使用 jQuery 與 Bootstrap。'
+          }
+        ],
+        projects: [
+          {
+            id: `demo-proj-${Date.now()}-1`,
+            title: '企業級後台管理系統',
+            url: 'https://admin-demo.example.com',
+            description: '一個提供給客戶管理訂單的後台，包含數據視覺化儀表板。使用 React Query 處理資料快取。',
+            attachments: [] 
+          }
+        ],
+        uploadedResumeFile: null
+     };
+
+     setFormData(demoData);
+     setCurrentStep(0); // Jump to first step to show data
+     
+     // Visual feedback
+     const btn = document.getElementById('demo-btn');
+     if(btn) {
+         const originalText = btn.innerText;
+         btn.innerText = "已載入！";
+         btn.classList.add('bg-green-100', 'text-green-800');
+         setTimeout(() => {
+             btn.innerText = originalText;
+             btn.classList.remove('bg-green-100', 'text-green-800');
+         }, 1000);
+     }
+  };
+
   const handleInputChange = (field: keyof UserInputData, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
@@ -48,7 +149,7 @@ const App: React.FC = () => {
   const handleAddProject = () => {
     setFormData(prev => ({
       ...prev,
-      projects: [...prev.projects, { id: Date.now().toString(), title: '', url: '', description: '', images: [] }]
+      projects: [...prev.projects, { id: Date.now().toString(), title: '', url: '', description: '', attachments: [] }]
     }));
   };
 
@@ -59,12 +160,32 @@ const App: React.FC = () => {
     }));
   };
 
-  const handleProjectImageUpload = (id: string, files: FileList | null) => {
-      if (!files) return;
+  const handleProjectAttachmentUpload = (id: string, files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      
       const fileArray = Array.from(files);
+      setFormData(prev => {
+          const newProjects = prev.projects.map(p => {
+              if (p.id === id) {
+                  return { ...p, attachments: [...p.attachments, ...fileArray] };
+              }
+              return p;
+          });
+          return { ...prev, projects: newProjects };
+      });
+  };
+
+  const handleRemoveProjectAttachment = (projectId: string, index: number) => {
       setFormData(prev => ({
           ...prev,
-          projects: prev.projects.map(p => p.id === id ? { ...p, images: [...p.images, ...fileArray] } : p)
+          projects: prev.projects.map(p => {
+              if (p.id === projectId) {
+                  const newAttachments = [...p.attachments];
+                  newAttachments.splice(index, 1);
+                  return { ...p, attachments: newAttachments };
+              }
+              return p;
+          })
       }));
   };
 
@@ -75,17 +196,89 @@ const App: React.FC = () => {
       const result = await generateResume(formData);
       setGeneratedResume(result);
       setCurrentStep(3);
-    } catch (err) {
-      setError("發生錯誤，請檢查您的 API Key 或稍後再試。");
-      console.error(err);
+    } catch (err: any) {
+      console.error("Full error:", err);
+      let errorMessage = "發生錯誤，請稍後再試。";
+      if (err instanceof Error) {
+        errorMessage = `Error: ${err.message}`;
+        if (err.message.includes("400")) errorMessage += " (Request Rejected)";
+        if (err.message.includes("401") || err.message.includes("403")) errorMessage += " (API Key Invalid)";
+      }
+      setError(errorMessage);
     } finally {
       setIsGenerating(false);
     }
   };
 
+  const handleDownloadPDF = () => {
+      const element = document.getElementById('resume-preview');
+      if (!element) return;
+      
+      // Visual feedback
+      const btn = document.getElementById('download-btn');
+      let originalText = '';
+      if (btn) {
+        originalText = btn.innerText;
+        btn.innerText = "⏳ 產生中...";
+        // @ts-ignore
+        btn.disabled = true;
+      }
+
+      // Temporarily remove shadow for cleaner PDF
+      const hasShadow = element.classList.contains('shadow-2xl');
+      if (hasShadow) element.classList.remove('shadow-2xl');
+
+      const opt = {
+          margin: 0,
+          filename: `${formData.name || 'Resume'}_CV.pdf`,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true, scrollY: 0 },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      };
+
+      // @ts-ignore
+      if (window.html2pdf) {
+          // @ts-ignore
+          window.html2pdf().from(element).set(opt).save()
+          .then(() => {
+              if (hasShadow) element.classList.add('shadow-2xl');
+              if (btn) {
+                  btn.innerText = originalText;
+                  // @ts-ignore
+                  btn.disabled = false;
+              }
+          })
+          .catch((err: any) => {
+              console.error("PDF generation failed:", err);
+              if (hasShadow) element.classList.add('shadow-2xl');
+              if (btn) {
+                  btn.innerText = "❌ 失敗";
+                  setTimeout(() => {
+                      btn.innerText = originalText;
+                      // @ts-ignore
+                      btn.disabled = false;
+                  }, 2000);
+              }
+          });
+      } else {
+          console.error("html2pdf library not loaded");
+          if (hasShadow) element.classList.add('shadow-2xl');
+          if (btn) {
+              btn.innerText = "❌ 套件載入失敗";
+              // @ts-ignore
+              btn.disabled = false;
+          }
+      }
+  };
+
   // Render Functions
   const renderStep1 = () => (
     <div className="space-y-6 animate-fade-in">
+        <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-4">
+          <p className="text-sm text-blue-700">
+            💡 系統會自動儲存您的文字輸入。若重新整理頁面，文字資料將會保留，但<b>上傳的檔案（履歷檔、圖片）需要重新上傳</b>。
+          </p>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
                 <label className="block text-sm font-medium text-gray-700">姓名</label>
@@ -224,7 +417,11 @@ const App: React.FC = () => {
       <div className="space-y-6">
           <div className="bg-yellow-50 p-4 rounded-md border border-yellow-200">
               <p className="text-yellow-800 text-sm">
-                  <b>💡 AI 提示：</b> 上傳專案截圖或技術架構圖，Gemini 將會自動分析圖片內容，生成更具體的技術描述。
+                  <b>💡 AI 提示：</b> 請上傳專案相關檔案。
+                  <ul className="list-disc ml-5 mt-1">
+                      <li><b>圖片 (.jpg, .png)</b>：AI 會分析畫面，並將圖片展示在履歷中。</li>
+                      <li><b>文字檔 (.txt, .md)</b>：AI 會讀取內容作為專案描述參考，但不會直接顯示在履歷上。</li>
+                  </ul>
               </p>
           </div>
           
@@ -260,21 +457,49 @@ const App: React.FC = () => {
                   />
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">上傳圖片/技術文件 (供 AI 分析)</label>
-                    <input 
-                        type="file" 
-                        multiple 
-                        accept="image/*"
-                        onChange={(e) => handleProjectImageUpload(proj.id, e.target.files)}
-                        className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"
-                    />
-                    {proj.images.length > 0 && (
-                        <div className="flex gap-2 mt-2 overflow-x-auto">
-                            {proj.images.map((img, i) => (
-                                <div key={i} className="relative flex-shrink-0">
-                                    <img src={URL.createObjectURL(img)} alt="preview" className="h-16 w-16 object-cover rounded border" />
+                    <label className="block text-sm font-medium text-gray-700 mb-2">上傳相關檔案 (圖片展示 / 文字檔分析)</label>
+                    <div className="flex items-center gap-4">
+                        <label className="cursor-pointer bg-purple-50 text-purple-700 px-4 py-2 rounded-md hover:bg-purple-100 text-sm font-medium transition-colors">
+                            選擇檔案
+                            <input 
+                                type="file" 
+                                multiple 
+                                accept="image/*,.txt,.md"
+                                onChange={(e) => handleProjectAttachmentUpload(proj.id, e.target.files)}
+                                className="hidden"
+                            />
+                        </label>
+                        <span className="text-xs text-gray-500">已上傳 {proj.attachments.length} 個檔案</span>
+                    </div>
+                    
+                    {proj.attachments.length > 0 && (
+                        <div className="flex gap-3 mt-3 overflow-x-auto pb-2">
+                            {proj.attachments.map((file, i) => {
+                                const isImage = file.type.startsWith('image/');
+                                return (
+                                <div key={i} className="relative flex-shrink-0 group w-20 h-20 border border-gray-300 rounded shadow-sm bg-gray-50 flex flex-col items-center justify-center text-center p-1">
+                                    {isImage ? (
+                                        <img 
+                                            src={URL.createObjectURL(file)} 
+                                            alt={`preview-${i}`} 
+                                            className="h-full w-full object-cover rounded" 
+                                        />
+                                    ) : (
+                                        <div className="flex flex-col items-center justify-center h-full w-full">
+                                            <span className="text-2xl">📄</span>
+                                            <span className="text-[10px] text-gray-600 line-clamp-2 leading-tight break-all">{file.name}</span>
+                                        </div>
+                                    )}
+                                    <button 
+                                        onClick={() => handleRemoveProjectAttachment(proj.id, i)}
+                                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                                        title="刪除"
+                                    >
+                                        ×
+                                    </button>
                                 </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
                   </div>
@@ -292,28 +517,47 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col font-sans">
       {/* Header */}
-      <header className="bg-gradient-to-r from-blue-700 to-indigo-800 text-white shadow-lg sticky top-0 z-50">
+      <header className="bg-gradient-to-r from-blue-700 to-indigo-800 text-white shadow-lg sticky top-0 z-50 print:hidden">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
             <div className="flex items-center gap-2">
                 <span className="text-2xl">🚀</span>
                 <h1 className="text-xl font-bold tracking-wide">AI 自信履歷表大師</h1>
             </div>
-            <div className="text-sm opacity-80 hidden md:block">符合 104 人力銀行格式標準</div>
+            <div className="flex items-center gap-2 md:gap-4">
+                <div className="text-sm opacity-80 hidden md:block">符合 104 人力銀行格式標準</div>
+                <button 
+                  id="demo-btn"
+                  onClick={handleLoadDemoData}
+                  className="text-xs bg-white text-blue-800 hover:bg-blue-50 px-3 py-1 rounded transition-colors font-medium border border-blue-200"
+                >
+                  帶入範例
+                </button>
+                <button 
+                  onClick={handleClearData} 
+                  className="text-xs bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded transition-colors"
+                  title="清除暫存資料"
+                >
+                  清除暫存
+                </button>
+            </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-grow w-full max-w-4xl mx-auto px-4 py-8">
-        <Steps currentStep={currentStep} steps={STEPS} setStep={isGenerating ? () => {} : setCurrentStep} />
+      {/* Main Content - Outer wrapper that gets hidden during print except for the ID below */}
+      <main className="flex-grow w-full max-w-4xl mx-auto px-4 py-8 print:p-0 print:max-w-none print:w-full">
+        <div className="print:hidden">
+            <Steps currentStep={currentStep} steps={STEPS} setStep={isGenerating ? () => {} : setCurrentStep} />
+        </div>
 
         {error && (
-            <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-6">
-                <p className="text-red-700 font-bold">Error</p>
-                <p className="text-red-600">{error}</p>
+            <div className="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded-md shadow-sm print:hidden">
+                <p className="text-red-700 font-bold mb-1">發生錯誤 (Error Occurred)</p>
+                <p className="text-red-600 text-sm font-mono break-all">{error}</p>
+                <p className="text-red-500 text-xs mt-2">請確認您的 API Key 是否正確，或嘗試減少上傳的圖片數量。</p>
             </div>
         )}
 
-        <div className="bg-white rounded-xl shadow-xl p-6 md:p-8 min-h-[500px]">
+        <div className="bg-white rounded-xl shadow-xl p-6 md:p-8 min-h-[500px] print:shadow-none print:p-0 print:min-h-0">
             {isGenerating ? (
                 <div className="flex flex-col items-center justify-center h-full py-20 space-y-6">
                     <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
@@ -325,17 +569,23 @@ const App: React.FC = () => {
                 </div>
             ) : (
                 <>
-                    {currentStep === 0 && renderStep1()}
-                    {currentStep === 1 && renderStep2()}
-                    {currentStep === 2 && renderStep3()}
+                    {/* Render content based on step */}
+                    <div className="print:hidden">
+                        {currentStep === 0 && renderStep1()}
+                        {currentStep === 1 && renderStep2()}
+                        {currentStep === 2 && renderStep3()}
+                    </div>
+
                     {currentStep === 3 && generatedResume && (
                         <div className="animate-fade-in">
-                            <div className="flex justify-end mb-4 gap-3 no-print">
+                            <div className="flex justify-end mb-4 gap-3 print:hidden">
                                 <button 
-                                    onClick={() => window.print()}
+                                    id="download-btn"
+                                    type="button"
+                                    onClick={handleDownloadPDF}
                                     className="px-4 py-2 bg-gray-800 text-white rounded-md hover:bg-gray-900 flex items-center gap-2"
                                 >
-                                    🖨️ 列印 / 存為 PDF
+                                    📥 下載 PDF (Download)
                                 </button>
                                 <button 
                                     onClick={() => setCurrentStep(0)}
@@ -344,13 +594,17 @@ const App: React.FC = () => {
                                     重新編輯
                                 </button>
                             </div>
-                            <ResumePreview data={generatedResume} userData={formData} />
+                            
+                            {/* This ID is targeted by @media print */}
+                            <div id="printable-content">
+                                <ResumePreview data={generatedResume} userData={formData} />
+                            </div>
                         </div>
                     )}
 
                     {/* Navigation Buttons */}
                     {currentStep < 3 && (
-                        <div className="mt-8 pt-6 border-t border-gray-100 flex justify-between">
+                        <div className="mt-8 pt-6 border-t border-gray-100 flex justify-between print:hidden">
                             <button 
                                 onClick={() => setCurrentStep(prev => Math.max(0, prev - 1))}
                                 disabled={currentStep === 0}
@@ -381,7 +635,7 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      <footer className="bg-gray-800 text-gray-400 py-6 text-center text-sm mt-auto">
+      <footer className="bg-gray-800 text-gray-400 py-6 text-center text-sm mt-auto print:hidden">
         <p>© 2024 AI Confidence Resume Master. Powered by Google Gemini.</p>
       </footer>
     </div>

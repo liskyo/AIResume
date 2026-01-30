@@ -6,10 +6,50 @@
     <title>AI 自信履歷表大師</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <style>
       body {
         font-family: 'Noto Sans TC', sans-serif;
         background-color: #f3f4f6;
+      }
+      
+      @media print {
+        @page {
+          margin: 0; /* Remove browser default margins */
+          size: auto;
+        }
+        
+        /* Hide all body children by default */
+        body > * {
+          display: none !important;
+        }
+
+        /* Ensure root is displayed so we can reach the content */
+        body > #root {
+          display: block !important;
+        }
+
+        /* Hide everything inside root by default */
+        #root > * {
+          display: none !important;
+        }
+
+        /* Only display the specific printable content wrapper */
+        #root > #printable-content {
+          display: block !important;
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100%;
+          margin: 0;
+          padding: 0;
+        }
+
+        /* Reset backgrounds for printing */
+        * {
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
+        }
       }
     </style>
   <script type="importmap">

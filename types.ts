@@ -4,7 +4,7 @@ export interface RawProject {
   title: string;
   url: string;
   description: string;
-  images: File[]; // For uploading to Gemini for analysis
+  attachments: File[]; // Can be images (for display & analysis) or text (for analysis only)
 }
 
 export interface RawExperience {
