@@ -596,8 +596,11 @@ const App: React.FC = () => {
                             </div>
                             
                             {/* This ID is targeted by @media print */}
-                            <div id="printable-content">
-                                <ResumePreview data={generatedResume} userData={formData} />
+                            {/* ADDED WRAPPER: overflow-x-auto to allow horizontal scroll on mobile for A4 width */}
+                            <div className="overflow-x-auto pb-4">
+                                <div id="printable-content" className="min-w-[210mm]">
+                                    <ResumePreview data={generatedResume} userData={formData} />
+                                </div>
                             </div>
                         </div>
                     )}

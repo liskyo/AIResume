@@ -8,7 +8,7 @@ interface ResumePreviewProps {
 
 export const ResumePreview: React.FC<ResumePreviewProps> = ({ data, userData }) => {
   return (
-    <div className="bg-white shadow-2xl w-full max-w-[210mm] mx-auto p-12 min-h-[297mm] text-gray-800 print:shadow-none print:w-full print:max-w-none print:p-0" id="resume-preview">
+    <div className="bg-white shadow-2xl w-[210mm] min-w-[210mm] mx-auto p-12 min-h-[297mm] text-gray-800 print:shadow-none print:w-full print:max-w-none print:p-0" id="resume-preview">
       {/* Header */}
       <div className="border-b-4 border-blue-600 pb-6 mb-8">
         <div className="flex justify-between items-start">
@@ -42,9 +42,10 @@ export const ResumePreview: React.FC<ResumePreviewProps> = ({ data, userData }) 
         </p>
       </section>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        {/* Left Column (Main Content) */}
-        <div className="md:col-span-2 space-y-8">
+      {/* FIXED GRID LAYOUT: Changed from responsive (md:grid-cols-3) to fixed (grid-cols-3) */}
+      <div className="grid grid-cols-3 gap-8">
+        {/* Left Column (Main Content) - Fixed col-span-2 */}
+        <div className="col-span-2 space-y-8">
             {/* Experience */}
             <section>
                 <h3 className="text-xl font-bold text-blue-800 border-b-2 border-blue-100 pb-2 mb-4 flex items-center gap-2">
@@ -144,7 +145,7 @@ export const ResumePreview: React.FC<ResumePreviewProps> = ({ data, userData }) 
             </section>
         </div>
 
-        {/* Right Column (Side Info) */}
+        {/* Right Column (Side Info) - Naturally takes 1 column in grid-cols-3 */}
         <div className="space-y-8">
             {/* Education */}
             <section>
@@ -167,7 +168,8 @@ export const ResumePreview: React.FC<ResumePreviewProps> = ({ data, userData }) 
                 </h3>
                 <div className="flex flex-wrap gap-2">
                 {data.skills.map((skill, idx) => (
-                    <span key={idx} className="bg-blue-50 text-blue-800 px-3 py-1.5 rounded text-sm font-medium w-full md:w-auto text-center md:text-left print:bg-blue-50 print:text-blue-800">
+                    // Removed responsive width classes to ensure compact look
+                    <span key={idx} className="bg-blue-50 text-blue-800 px-3 py-1.5 rounded text-sm font-medium w-auto text-left print:bg-blue-50 print:text-blue-800">
                     {skill}
                     </span>
                 ))}
