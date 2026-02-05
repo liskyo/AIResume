@@ -1,5 +1,7 @@
 {
-  "name": "AI Confidence Resume Master",
-  "description": "An intelligent resume builder that transforms rough inputs, project images, and technical docs into a professional 104-style resume using Google Gemini AI.",
-  "requestFramePermissions": []
+  "name": "CareerBoost AI：履歷面試全攻略",
+  "description": "全方位的職涯加速器。包含符合 104 格式的 AI 履歷生成器，以及具備語音互動功能的 AI 模擬面試官，提供即時回饋與建議。",
+  "requestFramePermissions": [
+    "microphone"
+  ]
 }

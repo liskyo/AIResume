@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { GoogleGenAI, Type, Schema, Chat } from "@google/genai";
 import { UserInputData, GeneratedResume } from "../types";
 
 // Helper to convert File to Base64 for Gemini
@@ -19,7 +19,36 @@ const fileToPart = (file: File): Promise<{ inlineData: { data: string; mimeType:
   });
 };
 
-const fileToText = (file: File): Promise<string> => {
+const fileToText = async (file: File): Promise<string> => {
+    // Handle PDF files
+    if (file.type === 'application/pdf') {
+        if (typeof window === 'undefined' || !(window as any).pdfjsLib) {
+            console.warn("PDF.js not loaded, falling back to empty string");
+            return "";
+        }
+        try {
+            const pdfjs = (window as any).pdfjsLib;
+            // Set worker manually to ensure it loads from CDN correctly
+            pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+            
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+            let fullText = '';
+            
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items.map((item: any) => item.str).join(' ');
+                fullText += pageText + '\n';
+            }
+            return fullText;
+        } catch (e) {
+            console.error("PDF Parsing Error:", e);
+            return `(Error parsing PDF: ${file.name})`;
+        }
+    }
+
+    // Handle Text/MD files
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (event) => resolve(event.target?.result as string);
@@ -68,14 +97,17 @@ const resumeSchema: Schema = {
   required: ["professionalTitle", "professionalSummary", "skills", "experiences", "projects", "education", "autobiography", "interviewTips"]
 };
 
-export const generateResume = async (data: UserInputData): Promise<GeneratedResume> => {
-  // Safe Access to API Key
-  const apiKey = typeof process !== 'undefined' ? process.env.API_KEY : undefined;
-  if (!apiKey) {
-      throw new Error("API Key is missing from environment variables (process.env.API_KEY).");
-  }
+// --- API Helpers ---
+const getAiClient = () => {
+    const apiKey = typeof process !== 'undefined' ? process.env.API_KEY : undefined;
+    if (!apiKey) {
+        throw new Error("API Key is missing from environment variables (process.env.API_KEY).");
+    }
+    return new GoogleGenAI({ apiKey: apiKey });
+};
 
-  const ai = new GoogleGenAI({ apiKey: apiKey });
+export const generateResume = async (data: UserInputData): Promise<GeneratedResume> => {
+  const ai = getAiClient();
 
   // 1. Prepare Text Context
   let textPrompt = `
@@ -102,13 +134,13 @@ export const generateResume = async (data: UserInputData): Promise<GeneratedResu
     5. CRITICAL: When generating the 'projects' array, you MUST use the EXACT SAME 'title' as provided in the User Profile for each project. Do not rename projects, or I cannot match the images to the text.
   `;
 
-  // 2. Handle Text File Upload
+  // 2. Handle Text/PDF File Upload
   if (data.uploadedResumeFile) {
       try {
           const textContent = await fileToText(data.uploadedResumeFile);
-          textPrompt += `\n\n[Reference Resume Content]:\n${textContent}`;
+          textPrompt += `\n\n[Reference Resume Content (${data.uploadedResumeFile.name})]:\n${textContent}`;
       } catch (e) {
-          console.error("Error reading text file", e);
+          console.error("Error reading file", e);
       }
   }
 
@@ -131,8 +163,8 @@ export const generateResume = async (data: UserInputData): Promise<GeneratedResu
                 console.warn("Failed to process image", e);
             }
         } 
-        // Handle Text Files
-        else if (file.type.startsWith("text/") || file.name.endsWith(".md") || file.name.endsWith(".txt")) {
+        // Handle Text/PDF Files
+        else if (file.type === 'application/pdf' || file.type.startsWith("text/") || file.name.endsWith(".md") || file.name.endsWith(".txt")) {
             try {
                 const content = await fileToText(file);
                 textPrompt += `\n[File Content (${file.name})]:\n${content}\n`;
@@ -174,4 +206,83 @@ export const generateResume = async (data: UserInputData): Promise<GeneratedResu
     console.error("Gemini API Error:", error);
     throw error;
   }
+};
+
+// --- Interview Module ---
+
+export interface InterviewSetupData {
+  resumeText: string;
+  jobDescription: string;
+  style: 'friendly' | 'strict';
+}
+
+export const startInterviewSession = (data: InterviewSetupData): Chat => {
+  const ai = getAiClient();
+  
+  const stylePrompt = data.style === 'strict' 
+    ? "Tone: Strict, professional, digging deep into technical details and inconsistencies. Do not be easily satisfied. Pressure the candidate slightly to test resilience." 
+    : "Tone: Friendly, encouraging, conversational. Focus on cultural fit and potential. Make the candidate feel comfortable.";
+
+  const systemInstruction = `
+    You are an AI Interviewer for a job interview.
+    
+    Context:
+    1. Candidate Resume: ${data.resumeText.substring(0, 10000)}... (Truncated if too long)
+    2. Target Job Description (JD): ${data.jobDescription.substring(0, 5000)}...
+    
+    Your Instructions:
+    - ${stylePrompt}
+    - Start by greeting the candidate and asking them to introduce themselves briefly.
+    - Ask ONE question at a time. Wait for the user's response.
+    - Ask a mix of behavioral (STAR method) and technical questions relevant to the JD and Resume.
+    - If the user's answer is vague, ask follow-up questions.
+    - Keep your responses concise (under 100 words usually) unless explaining a complex scenario.
+    - Language: Traditional Chinese (Taiwan), unless the JD implies English is required, then adapt.
+  `;
+
+  return ai.chats.create({
+    model: 'gemini-3-flash-preview',
+    config: {
+      systemInstruction: systemInstruction,
+    },
+  });
+};
+
+export const generateInterviewFeedback = async (chatHistory: any[]): Promise<string> => {
+  const ai = getAiClient();
+  
+  // Format history for the prompt
+  const historyText = chatHistory.map(msg => `${msg.role}: ${msg.parts[0].text}`).join('\n');
+
+  const prompt = `
+    Based on the following interview transcript, provide a detailed performance review for the candidate.
+    
+    Transcript:
+    ${historyText}
+    
+    Output Requirements (in Traditional Chinese, Markdown format):
+    1. **Score (0-100)**: Based on relevance, confidence, and technical accuracy.
+    2. **Strengths**: What did they do well?
+    3. **Weaknesses**: Where did they struggle?
+    4. **Keyword Hit Rate**: Did they mention keywords from the implied JD context?
+    5. **Actionable Suggestions**: Specific advice to improve for the next real interview.
+    
+    Make it encouraging but honest.
+  `;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+    });
+    return response.text || "無法產生回饋，請稍後再試。";
+  } catch (error) {
+    console.error("Feedback Generation Error:", error);
+    return "發生錯誤，無法分析面試紀錄。";
+  }
+};
+
+// Export helper for direct PDF parsing in App
+export const parseResumeFile = async (file: File): Promise<string> => {
+    return fileToText(file);
 };
