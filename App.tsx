@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Steps } from './components/Steps';
 import { ResumePreview } from './components/ResumePreview';
-import { generateResume, startInterviewSession, generateInterviewFeedback, parseResumeFile } from './services/geminiService';
+import { generateResume, startInterviewSession, generateInterviewFeedback, parseResumeFile, connectToLiveSession } from './services/geminiService';
 import { UserInputData, RawExperience, RawProject, GeneratedResume } from './types';
 import { Chat } from "@google/genai";
 
@@ -91,6 +91,13 @@ const App: React.FC = () => {
   const [interviewFeedback, setInterviewFeedback] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [interviewUploadLoading, setInterviewUploadLoading] = useState(false);
+  
+  // Live API State
+  const [isLiveMode, setIsLiveMode] = useState(false);
+  const [isLiveConnected, setIsLiveConnected] = useState(false);
+  const liveDisconnectRef = useRef<() => void>(() => {});
+  const nextStartTimeRef = useRef(0);
+  const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   
   const chatSessionRef = useRef<Chat | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -282,6 +289,13 @@ const App: React.FC = () => {
         return;
     }
     
+    // Check for Live Mode
+    if (isLiveMode) {
+      handleStartLiveInterview();
+      return;
+    }
+    
+    // Standard Chat Mode
     setInterviewStage('chat');
     setIsAiThinking(true);
     setChatMessages([]);
@@ -310,6 +324,59 @@ const App: React.FC = () => {
     }
   };
 
+  // --- Live API Handlers ---
+  const handleStartLiveInterview = async () => {
+     setInterviewStage('chat');
+     setIsLiveConnected(true);
+     setChatMessages([{ role: 'model', text: "正在連接 AI 語音通話..."}]);
+     
+     try {
+         const { disconnect, outputAudioContext } = await connectToLiveSession(
+             { resumeText: resumeTextContext, jobDescription: jdText, style: interviewStyle },
+             (audioBuffer) => {
+                 // Schedule Playback
+                 const source = outputAudioContext.createBufferSource();
+                 source.buffer = audioBuffer;
+                 source.connect(outputAudioContext.destination);
+                 
+                 source.onended = () => {
+                    audioSourcesRef.current.delete(source);
+                 };
+                 
+                 const now = outputAudioContext.currentTime;
+                 const start = Math.max(nextStartTimeRef.current, now);
+                 source.start(start);
+                 nextStartTimeRef.current = start + audioBuffer.duration;
+                 audioSourcesRef.current.add(source);
+             },
+             () => {
+                 setIsLiveConnected(false);
+                 handleEndInterview(); // Auto feedback when closed
+             }
+         );
+         
+         liveDisconnectRef.current = disconnect;
+         setChatMessages([{ role: 'model', text: "已連線！請開始說話 (AI 將會主動向您打招呼)。"}]);
+
+     } catch (e) {
+         console.error(e);
+         alert("無法啟動語音通話，請檢查麥克風權限或網路");
+         setIsLiveConnected(false);
+         setInterviewStage('setup');
+     }
+  };
+
+  const handleDisconnectLive = () => {
+      if (liveDisconnectRef.current) {
+          liveDisconnectRef.current();
+      }
+      // Stop all playing audio
+      audioSourcesRef.current.forEach(s => s.stop());
+      audioSourcesRef.current.clear();
+      nextStartTimeRef.current = 0;
+      setIsLiveConnected(false);
+  };
+
   const handleSendMessage = async () => {
     if (!currentMessage.trim() || !chatSessionRef.current) return;
 
@@ -332,15 +399,23 @@ const App: React.FC = () => {
   };
 
   const handleEndInterview = async () => {
-    if (!chatSessionRef.current) return;
-    
-    // Convert Chat history for feedback
-    const history = await chatSessionRef.current.getHistory();
-    setInterviewStage('feedback');
-    setInterviewFeedback(''); // Reset
-    
-    const feedback = await generateInterviewFeedback(history);
-    setInterviewFeedback(feedback);
+    if (isLiveMode && isLiveConnected) {
+        handleDisconnectLive();
+    }
+
+    if (chatSessionRef.current) {
+        // Convert Chat history for feedback
+        const history = await chatSessionRef.current.getHistory();
+        setInterviewStage('feedback');
+        setInterviewFeedback(''); // Reset
+        const feedback = await generateInterviewFeedback(history);
+        setInterviewFeedback(feedback);
+    } else {
+        // For Live mode, we might not have text transcript easily available unless we used transcription features.
+        // For now, give a generic completion message or basic feedback if available.
+        setInterviewStage('feedback');
+        setInterviewFeedback("語音通話模式已結束。 (目前 Live API 版本暫不支援文字逐字稿分析，請切換至文字模式以獲取詳細報告)");
+    }
   };
 
   // --- Voice Features ---
@@ -370,20 +445,37 @@ const App: React.FC = () => {
 
     const recognition = new SpeechRecognition();
     recognition.lang = 'zh-TW';
-    recognition.interimResults = false;
+    recognition.interimResults = true; // IMPORTANT: Real-time typing effect
     recognition.maxAlternatives = 1;
+    recognition.continuous = false; // Stop after one sentence to send
 
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => setIsListening(false);
     recognition.onresult = (event: any) => {
-      const transcript = event.results[0][0].transcript;
-      setCurrentMessage(prev => prev + (prev ? ' ' : '') + transcript);
+      // With interimResults, we need to handle final vs interim
+      let finalTranscript = '';
+      let interimTranscript = '';
+
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript;
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+
+      // Update input. Note: We only append final, and show interim.
+      // For simplicity in this text box, we just replace the pending text part or append.
+      // Since this is a simple input, let's just set value.
+      if (finalTranscript) {
+           setCurrentMessage(prev => prev + finalTranscript);
+      }
     };
 
     recognition.start();
   };
 
-  // --- Render Functions (Resume) - RESTORED FULL FIDELITY ---
+  // --- Render Functions (Resume) ---
   const renderStep1 = () => (
     <div className="space-y-6 animate-fade-in">
         <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-4">
@@ -624,7 +716,7 @@ const App: React.FC = () => {
       </div>
   );
 
-  const ResumeBuilderView = () => (
+  const renderResumeBuilderView = () => (
     <div className="animate-fade-in">
         <Steps currentStep={currentStep} steps={STEPS} setStep={isGenerating ? () => {} : setCurrentStep} />
         
@@ -685,7 +777,7 @@ const App: React.FC = () => {
     </div>
   );
 
-  const InterviewView = () => (
+  const renderInterviewView = () => (
     <div className="animate-fade-in max-w-2xl mx-auto">
        {interviewStage === 'setup' && (
          <div className="bg-white rounded-xl shadow-xl p-8 space-y-6">
@@ -764,77 +856,129 @@ const App: React.FC = () => {
                  </button>
                </div>
             </div>
+            
+            <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-100 flex items-start gap-3">
+                 <div className="mt-1">
+                     <input type="checkbox" id="liveMode" checked={isLiveMode} onChange={e => setIsLiveMode(e.target.checked)} className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500" />
+                 </div>
+                 <label htmlFor="liveMode" className="text-sm cursor-pointer select-none">
+                     <span className="font-bold text-indigo-900 block">開啟語音通話模式 (Live)</span>
+                     <span className="text-indigo-700">使用最新的 AI 即時語音技術，您可以直接用說話的方式與 AI 進行全雙工對話，體驗更真實的面試臨場感。</span>
+                 </label>
+            </div>
 
             <button 
               onClick={handleStartInterview}
               disabled={interviewUploadLoading}
-              className="w-full py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg font-bold shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              className={`w-full py-3 text-white rounded-lg font-bold shadow-md hover:shadow-lg transform hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2 disabled:opacity-50 ${isLiveMode ? 'bg-gradient-to-r from-indigo-600 to-purple-600' : 'bg-gradient-to-r from-purple-600 to-indigo-600'}`}
             >
-              🚀 開始模擬面試
+              {isLiveMode ? '📞 開始語音通話面試' : '🚀 開始文字/語音面試'}
             </button>
          </div>
        )}
 
        {interviewStage === 'chat' && (
          <div className="bg-white rounded-xl shadow-xl overflow-hidden flex flex-col h-[600px]">
-            <div className="bg-purple-700 text-white p-4 flex justify-between items-center">
+            {/* Header */}
+            <div className={`${isLiveMode && isLiveConnected ? 'bg-indigo-600' : 'bg-purple-700'} text-white p-4 flex justify-between items-center transition-colors duration-500`}>
               <div className="flex items-center gap-2">
-                 <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
-                 <span className="font-bold">AI 面試官 ({interviewStyle === 'friendly' ? '親切' : '嚴格'})</span>
+                 <div className={`w-2 h-2 rounded-full ${isLiveConnected ? 'bg-green-400 animate-pulse' : 'bg-gray-300'}`}></div>
+                 <span className="font-bold">
+                     AI 面試官 ({interviewStyle === 'friendly' ? '親切' : '嚴格'})
+                     {isLiveMode && <span className="text-xs bg-white/20 px-2 py-0.5 rounded ml-2">LIVE</span>}
+                 </span>
               </div>
               <button onClick={handleEndInterview} className="text-xs bg-red-500 hover:bg-red-600 px-3 py-1 rounded">結束並分析</button>
             </div>
             
-            <div className="flex-grow overflow-y-auto p-4 space-y-4 bg-gray-50 scroll-smooth">
-               {chatMessages.map((msg, idx) => (
-                 <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                   <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-                     msg.role === 'user' 
-                       ? 'bg-blue-600 text-white rounded-br-none' 
-                       : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none shadow-sm'
-                   }`}>
-                     {msg.text}
-                   </div>
-                 </div>
-               ))}
-               {isAiThinking && (
-                 <div className="flex justify-start">
-                   <div className="bg-gray-100 rounded-2xl px-4 py-2 flex gap-1">
-                     <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
-                     <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-100"></span>
-                     <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200"></span>
-                   </div>
-                 </div>
-               )}
-               <div ref={messagesEndRef} />
-            </div>
+            {/* Live Mode Visualizer / Chat Content */}
+            {isLiveMode ? (
+                <div className="flex-grow flex flex-col items-center justify-center bg-gray-900 text-white relative overflow-hidden">
+                    {/* Background Animation */}
+                    <div className="absolute inset-0 flex items-center justify-center opacity-20">
+                         <div className={`w-64 h-64 rounded-full border-4 border-indigo-500 ${isLiveConnected ? 'animate-ping' : ''}`}></div>
+                    </div>
+                    
+                    <div className="z-10 text-center space-y-6">
+                        <div className={`w-32 h-32 rounded-full mx-auto flex items-center justify-center transition-all duration-500 ${isLiveConnected ? 'bg-indigo-600 shadow-[0_0_30px_rgba(79,70,229,0.5)]' : 'bg-gray-700'}`}>
+                             <span className="text-5xl">🎤</span>
+                        </div>
+                        <div>
+                             <h3 className="text-2xl font-bold">{isLiveConnected ? "通話中..." : "連線中..."}</h3>
+                             <p className="text-indigo-300 mt-2">請直接說話，AI 會即時回應</p>
+                        </div>
+                    </div>
+                    
+                    <div className="absolute bottom-8 left-0 right-0 px-8 text-center">
+                         <p className="text-gray-500 text-xs">建議使用耳機以獲得最佳體驗</p>
+                    </div>
+                </div>
+            ) : (
+                <div className="flex-grow overflow-y-auto p-4 space-y-4 bg-gray-50 scroll-smooth">
+                   {chatMessages.map((msg, idx) => (
+                     <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                       <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+                         msg.role === 'user' 
+                           ? 'bg-blue-600 text-white rounded-br-none' 
+                           : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none shadow-sm'
+                       }`}>
+                         {msg.text}
+                       </div>
+                     </div>
+                   ))}
+                   {isAiThinking && (
+                     <div className="flex justify-start">
+                       <div className="bg-gray-100 rounded-2xl px-4 py-2 flex gap-1">
+                         <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
+                         <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-100"></span>
+                         <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200"></span>
+                       </div>
+                     </div>
+                   )}
+                   <div ref={messagesEndRef} />
+                </div>
+            )}
 
-            <div className="p-4 bg-white border-t border-gray-100">
-               <div className="flex gap-2">
-                 <button 
-                   onClick={toggleMic}
-                   className={`p-3 rounded-full flex-shrink-0 transition-all ${isListening ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-                   title="語音輸入"
-                 >
-                   🎤
-                 </button>
-                 <input 
-                   type="text" 
-                   value={currentMessage}
-                   onChange={e => setCurrentMessage(e.target.value)}
-                   onKeyPress={e => e.key === 'Enter' && handleSendMessage()}
-                   placeholder="輸入回答..."
-                   className="flex-grow border rounded-full px-4 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
-                 />
-                 <button 
-                   onClick={handleSendMessage}
-                   disabled={!currentMessage.trim() || isAiThinking}
-                   className="bg-purple-600 text-white p-3 rounded-full hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                 >
-                   ➤
-                 </button>
-               </div>
-            </div>
+            {/* Input Area (Hidden for Live Mode usually, but user might want to disconnect) */}
+            {!isLiveMode && (
+                <div className="p-4 bg-white border-t border-gray-100">
+                   <div className="flex gap-2">
+                     <button 
+                       onClick={toggleMic}
+                       className={`p-3 rounded-full flex-shrink-0 transition-all ${isListening ? 'bg-red-100 text-red-600 animate-pulse ring-2 ring-red-400' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                       title="語音輸入"
+                     >
+                       🎤
+                     </button>
+                     <input 
+                       type="text" 
+                       value={currentMessage}
+                       onChange={e => setCurrentMessage(e.target.value)}
+                       onKeyPress={e => e.key === 'Enter' && handleSendMessage()}
+                       placeholder="輸入回答..."
+                       className="flex-grow border rounded-full px-4 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                     />
+                     <button 
+                       onClick={handleSendMessage}
+                       disabled={!currentMessage.trim() || isAiThinking}
+                       className="bg-purple-600 text-white p-3 rounded-full hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                     >
+                       ➤
+                     </button>
+                   </div>
+                </div>
+            )}
+            
+            {isLiveMode && (
+                 <div className="p-4 bg-gray-900 border-t border-gray-800 flex justify-center">
+                      <button 
+                        onClick={handleEndInterview}
+                        className="bg-red-600 text-white px-8 py-3 rounded-full font-bold hover:bg-red-700 shadow-lg flex items-center gap-2"
+                      >
+                         <span>❌</span> 掛斷電話
+                      </button>
+                 </div>
+            )}
          </div>
        )}
 
@@ -860,7 +1004,7 @@ const App: React.FC = () => {
              
              <div className="flex gap-4">
                <button 
-                 onClick={() => { setInterviewStage('setup'); setChatMessages([]); }}
+                 onClick={() => { setInterviewStage('setup'); setChatMessages([]); setIsLiveMode(false); }}
                  className="flex-1 py-2 border border-gray-300 rounded-md text-gray-600 hover:bg-gray-50"
                >
                  🔄 重新開始
@@ -909,7 +1053,8 @@ const App: React.FC = () => {
            <SegmentedControl activeTab={activeTab} onChange={setActiveTab} />
         </div>
         
-        {activeTab === 'resume' ? <ResumeBuilderView /> : <InterviewView />}
+        {/* Fix: Call these as functions, not as components, to avoid remounting */}
+        {activeTab === 'resume' ? renderResumeBuilderView() : renderInterviewView()}
       </main>
 
       <footer className="bg-gray-800 text-gray-400 py-6 text-center text-sm mt-auto print:hidden">

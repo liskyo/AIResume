@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, Schema, Chat } from "@google/genai";
+import { GoogleGenAI, Type, Schema, Chat, LiveServerMessage, Modality } from "@google/genai";
 import { UserInputData, GeneratedResume } from "../types";
 
 // Helper to convert File to Base64 for Gemini
@@ -208,7 +208,7 @@ export const generateResume = async (data: UserInputData): Promise<GeneratedResu
   }
 };
 
-// --- Interview Module ---
+// --- Standard Chat Interview Module ---
 
 export interface InterviewSetupData {
   resumeText: string;
@@ -285,4 +285,146 @@ export const generateInterviewFeedback = async (chatHistory: any[]): Promise<str
 // Export helper for direct PDF parsing in App
 export const parseResumeFile = async (file: File): Promise<string> => {
     return fileToText(file);
+};
+
+// --- Live API (Real-time Voice) Helpers ---
+
+// Audio Encoding/Decoding Utilities
+const decode = (base64: string) => {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+};
+
+const encode = (bytes: Uint8Array) => {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+};
+
+const decodeAudioData = async (
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number = 24000,
+  numChannels: number = 1,
+): Promise<AudioBuffer> => {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+};
+
+const createBlob = (data: Float32Array): any => { // Using any to match API expectation loosely or simple object
+  const l = data.length;
+  const int16 = new Int16Array(l);
+  for (let i = 0; i < l; i++) {
+    int16[i] = data[i] * 32768;
+  }
+  return {
+    data: encode(new Uint8Array(int16.buffer)),
+    mimeType: 'audio/pcm;rate=16000',
+  };
+};
+
+export const connectToLiveSession = async (
+  data: InterviewSetupData, 
+  onAudioData: (buffer: AudioBuffer) => void,
+  onClose: () => void
+) => {
+  const ai = getAiClient();
+  const inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 16000});
+  const outputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+  
+  let stream: MediaStream;
+  try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+      console.error("Microphone permission denied", e);
+      throw e;
+  }
+
+  const stylePrompt = data.style === 'strict' 
+    ? "Tone: Strict, professional, asking follow-ups. You are a tough interviewer." 
+    : "Tone: Friendly, conversational. You are a supportive interviewer.";
+
+  const systemInstruction = `
+    You are an AI Interviewer in a live voice call.
+    Role: Professional Recruiter.
+    Language: Traditional Chinese (Taiwan), spoken naturally.
+    
+    Candidate Info:
+    Resume: ${data.resumeText.substring(0, 5000)}
+    JD: ${data.jobDescription.substring(0, 2000)}
+    
+    Instructions:
+    - ${stylePrompt}
+    - Keep responses purely spoken and concise (1-3 sentences).
+    - Do not use markdown or bullet points in speech.
+    - Start by saying hello and asking for a self-introduction.
+  `;
+
+  const sessionPromise = ai.live.connect({
+    model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+    config: {
+      responseModalities: [Modality.AUDIO],
+      systemInstruction: systemInstruction,
+      speechConfig: {
+          voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+      }
+    },
+    callbacks: {
+      onopen: () => {
+        console.log("Live Session Connected");
+        // Setup Mic Stream
+        const source = inputAudioContext.createMediaStreamSource(stream);
+        const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
+        scriptProcessor.onaudioprocess = (e) => {
+           const inputData = e.inputBuffer.getChannelData(0);
+           const pcmBlob = createBlob(inputData);
+           sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
+        };
+        source.connect(scriptProcessor);
+        scriptProcessor.connect(inputAudioContext.destination);
+      },
+      onmessage: async (msg: LiveServerMessage) => {
+        const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+        if (base64Audio) {
+            const buffer = await decodeAudioData(decode(base64Audio), outputAudioContext);
+            onAudioData(buffer);
+        }
+      },
+      onclose: () => {
+        console.log("Live Session Closed");
+        onClose();
+      },
+      onerror: (e) => {
+        console.error("Live Session Error", e);
+        onClose();
+      }
+    }
+  });
+
+  return {
+    outputAudioContext,
+    disconnect: () => {
+        stream.getTracks().forEach(t => t.stop());
+        inputAudioContext.close();
+        outputAudioContext.close();
+        sessionPromise.then(s => s.close());
+    }
+  };
 };
