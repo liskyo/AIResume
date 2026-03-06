@@ -5,6 +5,7 @@ import { ResumePreview } from './components/ResumePreview';
 import { generateResume, startInterviewSession, generateInterviewFeedback, parseResumeFile, connectToLiveSession } from './services/geminiService';
 import { UserInputData, RawExperience, RawProject, GeneratedResume } from './types';
 import { Chat } from "@google/genai";
+import { CoverPage } from './components/CoverPage';
 
 // --- Types & Constants ---
 
@@ -53,6 +54,7 @@ const SegmentedControl = ({ activeTab, onChange }: { activeTab: 'resume' | 'inte
 
 const App: React.FC = () => {
   // Navigation State
+  const [showCover, setShowCover] = useState(true);
   const [activeTab, setActiveTab] = useState<'resume' | 'interview'>('resume');
 
   // Resume Builder State
@@ -1021,12 +1023,16 @@ const App: React.FC = () => {
     </div>
   );
 
+  if (showCover) {
+    return <CoverPage onStart={() => setShowCover(false)} />;
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col font-sans">
       {/* App Header */}
       <header className="bg-gradient-to-r from-slate-900 to-slate-800 text-white shadow-lg sticky top-0 z-50 print:hidden">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setShowCover(true)}>
                 <span className="text-3xl">🚀</span>
                 <div>
                   <h1 className="text-lg font-bold tracking-wide">CareerBoost AI</h1>
